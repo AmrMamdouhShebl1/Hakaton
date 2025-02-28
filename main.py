@@ -414,5 +414,5 @@ async def chat(request: Request):
 # Main function to run the server
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "34.138.134.25")
+    host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run("main:app", host=host, port=port, reload=True)
