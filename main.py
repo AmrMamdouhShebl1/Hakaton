@@ -6,7 +6,7 @@ import logging
 # Dependencies for LangChain
 from dotenv import load_dotenv
 from langchain_community.vectorstores import Chroma
-from langchain.docstore.document import Document
+# from langchain.docstore.document import Document
 
 # For Google's Gemini AI
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -359,7 +359,7 @@ async def generate_response(user_message: str, chat_history: List[Dict[str, str]
 # Redirect root to the static HTML interface
 @app.get("/")
 async def root():
-    return RedirectResponse(url="/static/index.html")
+    return RedirectResponse(url="/static/front.html")
 
 
 # API endpoint for health check

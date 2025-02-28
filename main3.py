@@ -23,7 +23,7 @@ import asyncio
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("real_estate_chatbot")
+logger = logging.getLogger("financial_advisor_chatbot")
 
 # Load environment variables
 load_dotenv()
@@ -34,7 +34,7 @@ if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY not found. Please set it in the .env file.")
 
 # Initialize the FastAPI app
-app = FastAPI(title="Real Estate Broker Chatbot")
+app = FastAPI(title="Financial Advisor Chatbot")
 
 # Add CORS middleware
 app.add_middleware(
@@ -63,40 +63,54 @@ chat_model = ChatGoogleGenerativeAI(
 )
 
 # Initialize vector stores from existing directories
-vector_store_english = None
-vector_store_arabic = None
+vector_store_savings = None
+vector_store_investments = None
+vector_store_loans = None
 
 
 # Load vector stores on startup
 @app.on_event("startup")
 async def startup_event():
-    global vector_store_english, vector_store_arabic
+    global vector_store_savings, vector_store_investments, vector_store_loans
 
-    # Load English vector store if it exists
-    if os.path.exists("emb_default_english"):
+    # Load savings plans vector store if it exists
+    if os.path.exists("emb_savings_plans"):
         try:
-            vector_store_english = Chroma(
+            vector_store_savings = Chroma(
+                persist_directory="emb_savings_plans",
+                embedding_function=embeddings
+            )
+            logger.info("Savings plans vector store loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading savings plans vector store: {str(e)}")
+    else:
+        logger.warning("Savings plans vector store directory not found")
+
+    # Load investment opportunities vector store if it exists
+    if os.path.exists("emb_default_english"):  # Using your existing real estate database
+        try:
+            vector_store_investments = Chroma(
                 persist_directory="emb_default_english",
                 embedding_function=embeddings
             )
-            logger.info("English vector store loaded successfully")
+            logger.info("Investment opportunities vector store loaded successfully")
         except Exception as e:
-            logger.error(f"Error loading English vector store: {str(e)}")
+            logger.error(f"Error loading investment opportunities vector store: {str(e)}")
     else:
-        logger.warning("English vector store directory not found")
+        logger.warning("Investment opportunities vector store directory not found")
 
-    # Load Arabic vector store if it exists
-    if os.path.exists("emb_default_english"):
+    # Load loans vector store if it exists
+    if os.path.exists("emb_loans"):
         try:
-            vector_store_arabic = Chroma(
-                persist_directory="eemb_default_english",
+            vector_store_loans = Chroma(
+                persist_directory="emb_loans",
                 embedding_function=embeddings
             )
-            logger.info("Arabic vector store loaded successfully")
+            logger.info("Loans vector store loaded successfully")
         except Exception as e:
-            logger.error(f"Error loading Arabic vector store: {str(e)}")
+            logger.error(f"Error loading loans vector store: {str(e)}")
     else:
-        logger.warning("Arabic vector store directory not found")
+        logger.warning("Loans vector store directory not found")
 
 
 # Function to detect if text contains Arabic
@@ -105,84 +119,171 @@ def is_arabic(text: str) -> bool:
     return bool(arabic_pattern.search(text))
 
 
-# Function to get relevant properties based on user query
-async def get_relevant_properties(query: str, top_k: int = 5):
+# Function to determine if the user is interested in savings, investments, or loans
+def determine_financial_goal(message: str) -> str:
     """
-    Retrieve the most relevant properties based on the user query.
+    Determine if the user is asking about savings, investments, or loans.
     """
-    # Determine which vector store to use based on query language
-    vector_store = vector_store_arabic if is_arabic(query) else vector_store_english
+    message = message.lower()
 
-    if not vector_store:
-        logger.warning(f"No vector store available for query language: {'Arabic' if is_arabic(query) else 'English'}")
-        return []
+    # Keywords related to savings
+    savings_keywords = ["save", "saving", "savings", "deposit", "emergency fund", "توفير", "ادخار", "وديعة"]
 
-    # Get the most relevant documents
-    try:
-        docs = vector_store.similarity_search(query, k=top_k)
-        return docs
-    except Exception as e:
-        logger.error(f"Error retrieving properties: {str(e)}")
-        return []
+    # Keywords related to investments
+    investment_keywords = ["invest", "investment", "property", "real estate", "returns",
+                           "استثمار", "عقار", "عقارات", "عوائد"]
+
+    # Keywords related to loans
+    loan_keywords = ["loan", "borrow", "finance", "mortgage", "credit",
+                     "قرض", "تمويل", "رهن", "ائتمان"]
+
+    # Check for savings keywords
+    for keyword in savings_keywords:
+        if keyword in message:
+            return "savings"
+
+    # Check for investment keywords
+    for keyword in investment_keywords:
+        if keyword in message:
+            return "investments"
+
+    # Check for loan keywords
+    for keyword in loan_keywords:
+        if keyword in message:
+            return "loans"
+
+    # Default to a general response if goal is unclear
+    return "unknown"
+
+
+# Function to get relevant financial products based on user query and goal
+async def get_relevant_information(query: str, financial_goal: str, top_k: int = 5):
+    """
+    Retrieve the most relevant financial products based on the user query and goal.
+    """
+    if financial_goal == "savings" and vector_store_savings:
+        try:
+            docs = vector_store_savings.similarity_search(query, k=top_k)
+            return docs, "savings"
+        except Exception as e:
+            logger.error(f"Error retrieving savings plans: {str(e)}")
+
+    elif financial_goal == "investments" and vector_store_investments:
+        try:
+            docs = vector_store_investments.similarity_search(query, k=top_k)
+            return docs, "investments"
+        except Exception as e:
+            logger.error(f"Error retrieving investment opportunities: {str(e)}")
+
+    elif financial_goal == "loans" and vector_store_loans:
+        try:
+            docs = vector_store_loans.similarity_search(query, k=top_k)
+            return docs, "loans"
+        except Exception as e:
+            logger.error(f"Error retrieving loan products: {str(e)}")
+
+    # If we couldn't determine the goal or don't have the right vector store
+    # Try all available stores in order of priority
+    for store, name in [(vector_store_investments, "investments"),
+                        (vector_store_savings, "savings"),
+                        (vector_store_loans, "loans")]:
+        if store:
+            try:
+                docs = store.similarity_search(query, k=top_k)
+                return docs, name
+            except Exception as e:
+                logger.error(f"Error retrieving from {name} store: {str(e)}")
+
+    return [], "unknown"
 
 
 # System prompts for the chatbot
 SYSTEM_PROMPT_ENGLISH = """
-You are a helpful real estate broker chatbot. Your goal is to help users find properties that match their needs.
-You have access to property information and can recommend suitable options.
+You are a sophisticated financial advisor chatbot. Your goal is to understand users' financial objectives and recommend appropriate financial products based on their needs and preferences.
 
-First, ask questions to understand the user's preferences:
-1. What type of property they're looking for (apartment, villa, office, etc.)
-2. Whether they want to rent or buy
-3. Their budget range
-4. Preferred location(s)
-5. Number of bedrooms/bathrooms needed
-6. Any specific amenities or features they require
+Start by asking questions to determine:
+1. Whether they're interested in saving money, investing in real estate, or obtaining a loan
+2. Their financial goals and timeline (short-term, medium-term, long-term)
+3. Their risk tolerance (conservative, moderate, aggressive) 
+4. Their budget and available funds (how much they can commit monthly/quarterly)
+5. Any specific preferences or constraints
 
-Based on their answers, you'll recommend properties that best match their requirements.
-Keep conversations friendly and professional. If you don't have enough information,
-politely ask for clarification. Always respond to queries in English.
+For SAVINGS goals:
+- Recommend appropriate savings plans or accounts
+- Explain interest rates, terms, and conditions
+- Discuss liquidity and access to funds
+- Highlight any tax advantages or special features
 
-For property recommendations, format them clearly with the most important details:
-- Property title
-- Type and status (rent/sale)
-- Location
-- Price
-- Size and number of rooms
-- Key features
-- Brief description
+For INVESTMENT goals, especially in real estate:
+- Recommend suitable properties based on their budget and goals
+- Explain payment structures (monthly, quarterly, lump sum)
+- Discuss expected returns and timelines
+- Highlight location benefits, property features, and market trends
+- Provide information on financing options if applicable
 
-If the user asks about a specific aspect of a property (like payment terms or viewing times),
-provide the relevant information if available.
+For LOAN needs:
+- Recommend appropriate loan products (mortgages, personal loans, etc.)
+- Explain interest rates, repayment terms, and conditions
+- Discuss eligibility requirements and application process
+- Highlight any special features or flexibility options
+
+Keep your tone professional but approachable. Explain financial concepts clearly without jargon. Always respond to queries in English.
+
+For product recommendations, format them clearly with the most important details:
+- Product/Property name
+- Key features and benefits
+- Financial terms (costs, returns, payment schedules)
+- Suitability for user's needs and goals
+- Any special considerations or limitations
+
+Present URLs as proper clickable links using markdown format: [Click here](URL)
+
+Important: Include appropriate disclaimers about investment risks and encourage users to do their own research or consult with licensed financial advisors before making investment decisions.
 """
 
 SYSTEM_PROMPT_ARABIC = """
-أنت روبوت دردشة وسيط عقاري مفيد. هدفك هو مساعدة المستخدمين في العثور على العقارات التي تناسب احتياجاتهم.
-لديك إمكانية الوصول إلى معلومات العقارات ويمكنك التوصية بالخيارات المناسبة.
+أنت مستشار مالي متطور على شكل روبوت محادثة. هدفك هو فهم الأهداف المالية للمستخدمين والتوصية بالمنتجات المالية المناسبة بناءً على احتياجاتهم وتفضيلاتهم.
 
-أولاً، اطرح أسئلة لفهم تفضيلات المستخدم:
-1. نوع العقار الذي يبحثون عنه (شقة، فيلا، مكتب، إلخ)
-2. ما إذا كانوا يريدون الإيجار أو الشراء
-3. نطاق ميزانيتهم
-4. الموقع/المواقع المفضلة
-5. عدد غرف النوم/الحمامات المطلوبة
-6. أي وسائل راحة أو ميزات محددة يحتاجونها
+ابدأ بطرح أسئلة لتحديد:
+1. ما إذا كانوا مهتمين بتوفير المال، أو الاستثمار في العقارات، أو الحصول على قرض
+2. أهدافهم المالية والإطار الزمني (قصير المدى، متوسط المدى، طويل المدى)
+3. مدى تقبلهم للمخاطر (متحفظ، معتدل، جريء)
+4. ميزانيتهم والأموال المتاحة (كم يمكنهم الالتزام به شهريًا/ربع سنويًا)
+5. أي تفضيلات أو قيود محددة
 
-بناءً على إجاباتهم، ستوصي بالعقارات التي تتناسب بشكل أفضل مع متطلباتهم.
-حافظ على المحادثات ودية ومهنية. إذا لم يكن لديك معلومات كافية،
-اطلب التوضيح بأدب. الرجاء الرد دائمًا على الاستفسارات باللغة العربية.
+بالنسبة لأهداف التوفير:
+- اقترح خطط أو حسابات توفير مناسبة
+- اشرح أسعار الفائدة والشروط والأحكام
+- ناقش السيولة وإمكانية الوصول إلى الأموال
+- سلط الضوء على أي مزايا ضريبية أو ميزات خاصة
 
-بالنسبة لتوصيات العقارات، قم بتنسيقها بوضوح مع أهم التفاصيل:
-- عنوان العقار
-- النوع والحالة (إيجار/بيع)
-- الموقع
-- السعر
-- الحجم وعدد الغرف
-- الميزات الرئيسية
-- وصف موجز
+بالنسبة لأهداف الاستثمار، خاصة في العقارات:
+- اقترح عقارات مناسبة بناءً على ميزانيتهم وأهدافهم
+- اشرح هياكل الدفع (شهري، ربع سنوي، دفعة واحدة)
+- ناقش العوائد المتوقعة والجداول الزمنية
+- سلط الضوء على فوائد الموقع وميزات العقار واتجاهات السوق
+- قدم معلومات حول خيارات التمويل إذا كان ذلك مناسبًا
 
-إذا سأل المستخدم عن جانب معين من العقار (مثل شروط الدفع أو أوقات المشاهدة)،
-قدم المعلومات ذات الصلة إذا كانت متاحة.
+بالنسبة لاحتياجات القروض:
+- اقترح منتجات القروض المناسبة (قروض عقارية، قروض شخصية، إلخ)
+- اشرح أسعار الفائدة وشروط السداد والأحكام
+- ناقش متطلبات الأهلية وعملية التقديم
+- سلط الضوء على أي ميزات خاصة أو خيارات مرونة
+
+حافظ على نبرة مهنية ولكن ودية. اشرح المفاهيم المالية بوضوح دون مصطلحات تقنية. الرجاء الرد دائمًا على الاستفسارات باللغة العربية.
+
+بالنسبة لتوصيات المنتجات، قم بتنسيقها بوضوح مع أهم التفاصيل:
+- اسم المنتج/العقار
+- الميزات والفوائد الرئيسية
+- الشروط المالية (التكاليف، العوائد، جداول الدفع)
+- مدى ملاءمته لاحتياجات المستخدم وأهدافه
+- أي اعتبارات أو قيود خاصة
+
+قدم الروابط كروابط قابلة للنقر باستخدام تنسيق ماركداون: [اضغط هنا](الرابط)
+
+مهم: قم بتضمين إخلاء مسؤولية مناسب حول مخاطر الاستثمار وشجع المستخدمين على إجراء أبحاثهم الخاصة أو استشارة مستشارين ماليين مرخصين قبل اتخاذ قرارات استثمارية.
+
+ستجد معلومات المنتجات المالية باللغة الإنجليزية، قم بترجمتها إلى العربية في ردك.
 """
 
 
@@ -195,22 +296,47 @@ async def generate_response(user_message: str, chat_history: List[Dict[str, str]
     is_arabic_query = is_arabic(user_message)
     system_prompt = SYSTEM_PROMPT_ARABIC if is_arabic_query else SYSTEM_PROMPT_ENGLISH
 
-    # Get relevant properties
-    relevant_properties = await get_relevant_properties(user_message)
+    # Try to determine financial goal from message and chat history
+    financial_goal = determine_financial_goal(user_message)
 
-    # Format property information for the context
-    property_context = ""
-    if relevant_properties:
-        property_context = "Here are some properties that might match what the user is looking for:\n\n"
-        for i, doc in enumerate(relevant_properties, 1):
-            property_context += f"Property {i}:\n{doc.page_content}\n\n"
+    # If goal is still unknown, try to infer from chat history
+    if financial_goal == "unknown" and chat_history:
+        history_text = " ".join([msg["content"] for msg in chat_history])
+        financial_goal = determine_financial_goal(history_text)
+
+    # Get relevant financial information based on determined goal
+    relevant_info, goal_type = await get_relevant_information(user_message, financial_goal)
+
+    # Format information for the context
+    info_context = ""
+    if relevant_info:
+        if goal_type == "savings":
+            info_context = "Here are some savings plans that might match the user's needs:\n\n"
+        elif goal_type == "investments":
+            info_context = "Here are some investment opportunities that might match the user's needs:\n\n"
+        elif goal_type == "loans":
+            info_context = "Here are some loan products that might match the user's needs:\n\n"
+        else:
+            info_context = "Here is some financial information that might help answer the user's query:\n\n"
+
+        for i, doc in enumerate(relevant_info, 1):
+            if goal_type == "investments":
+                info_context += f"Property {i}:\n{doc.page_content}\n\n"
+            else:
+                info_context += f"Product {i}:\n{doc.page_content}\n\n"
     else:
-        property_context = "I don't have specific properties matching this query in my database yet."
+        info_context = "I don't have specific financial products matching this query in my database yet."
+
+    # Add info about detected financial goal to the system prompt
+    if financial_goal != "unknown":
+        goal_info = f"\nThe user appears to be interested in {financial_goal}. "
+        goal_info += "Prioritize recommendations and questions related to this goal."
+        system_prompt += goal_info
 
     # Build messages for the chat model
     messages = [
         {"role": "system",
-         "content": system_prompt + "\n\nContext information about available properties:\n" + property_context}
+         "content": system_prompt + "\n\nContext information about available financial products:\n" + info_context}
     ]
 
     # Add chat history
